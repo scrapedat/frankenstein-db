@@ -1,0 +1,38 @@
+# FrankensteinDB Requirements
+# Core dependencies for the beautiful monster database system
+
+# Data compression and serialization
+msgpack>=1.0.0
+lzma>=0.0.0  # Built-in Python module
+
+# Database and caching
+redis>=4.0.0
+# sqlite3 is built-in to Python
+
+# Web scraping and parsing (optional - for examples)
+requests>=2.28.0
+beautifulsoup4>=4.11.0
+lxml>=4.9.0
+
+# Async support
+aiofiles>=0.8.0
+
+# Core dependencies
+msgpack>=1.0.0
+redis>=4.0.0  # Optional, graceful degradation if unavailable
+
+# Web scraping dependencies (for examples)
+requests>=2.28.0
+beautifulsoup4>=4.11.0
+
+# Development and testing
+pytest>=6.0.0
+pytest-asyncio>=0.21.0
+
+# Optional: For enhanced web analysis
+selenium>=4.0.0  # For JavaScript-heavy sites
+Pillow>=9.0.0   # For image analysis
+nltk>=3.7       # For content analysis
+
+# Optional: Monitoring and metrics
+psutil>=5.9.0   # For system monitoring
