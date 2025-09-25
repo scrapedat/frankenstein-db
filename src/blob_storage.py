@@ -1,9 +1,27 @@
-"""
-Blob Storage - File-based storage for web content
+"""Blob Storage - File-based storage with realtime sync
 
-Efficient file-based storage system for cached web content with
-automatic compression and nested directory structure for scalability.
+Efficient file-based storage system with MQTT notifications, Redis caching,
+and realtime synchronization capabilities.
 """
+
+import asyncio
+import hashlib
+import logging
+import time
+from typing import Optional, Dict, List, Any, Tuple
+from pathlib import Path
+
+from .redis_store import RedisContextStore
+from .secure_mqtt import SecureMQTTClient, ComponentType
+
+logger = logging.getLogger(__name__)
+
+BLOB_EVENTS = {
+    'created': 'blob.created',
+    'updated': 'blob.updated',
+    'deleted': 'blob.deleted',
+    'synced': 'blob.synced'
+}
 
 import os
 import asyncio
@@ -26,7 +44,11 @@ class BlobStorage:
     
     def __init__(self, storage_path: str = "./blob_storage",
                  cache_size_mb: int = 1024,
-                 dna_aware: bool = True):
+                 dna_aware: bool = True,
+                 redis_host: str = 'localhost',
+                 redis_port: int = 6379,
+                 mqtt_host: str = 'localhost',
+                 mqtt_port: int = 1883):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.metadata_file = self.storage_path / "metadata.json"
@@ -54,8 +76,29 @@ class BlobStorage:
         self.dna_patterns = {}
         self.access_patterns = {}
         
+        # Initialize Redis cache
+        self.redis = RedisContextStore(redis_host, redis_port)
+        
+        # Initialize MQTT client
+        self.mqtt = SecureMQTTClient(
+            client_id='blob_storage',
+            host=mqtt_host,
+            port=mqtt_port,
+            component_type=ComponentType.STORAGE
+        )
+        
+        # Sync state
+        self.sync_queue = asyncio.Queue()
+        self.sync_task = None
+        
         self._init_metadata()
+        self._init_realtime()
         logger.info(f"💾 Blob storage initialized at {self.storage_path}")
+        
+    def _init_realtime(self):
+        """Initialize realtime sync components"""
+        self.mqtt.subscribe('blob/#', self._handle_blob_event)
+        self.sync_task = asyncio.create_task(self._sync_worker())
 
     def _init_metadata(self):
         """Initialize metadata tracking"""
@@ -451,45 +494,131 @@ class BlobStorage:
         
         return await asyncio.get_event_loop().run_in_executor(None, _cleanup)
 
-    async def store_website_content(self, url: str, html_content: str, content_type: str = "text/html") -> str:
-        """
-        Convenience method to store website content with proper metadata
-        
-        Args:
-            url: Website URL
-            html_content: HTML content
-            content_type: MIME type of content
+    async def _handle_blob_event(self, topic: str, payload: Dict):
+        """Handle incoming blob events"""
+        try:
+            event_type = topic.split('/')[-1]
+            blob_key = payload.get('key')
             
-        Returns:
-            Storage path
-        """
-        import time
-        
-        key = f"html:{url}"
-        metadata = {
-            'url': url,
-            'content_type': content_type,
-            'timestamp': time.time(),
-            'original_size': len(html_content.encode('utf-8'))
-        }
-        
-        return await self.store_blob(
-            key, 
-            html_content.encode('utf-8'), 
-            compress=True, 
-            metadata=metadata
-        )
+            if event_type == 'created' or event_type == 'updated':
+                # Cache invalidation
+                await self.redis.delete(f'blob:{blob_key}')
+                self.content_cache.pop(blob_key, None)
+                
+                # Queue sync if needed
+                if payload.get('source') != self.mqtt.client_id:
+                    await self.sync_queue.put({
+                        'type': event_type,
+                        'key': blob_key,
+                        'metadata': payload.get('metadata')
+                    })
+                    
+        except Exception as e:
+            logger.error(f"Error handling blob event: {e}")
+    
+    async def _sync_worker(self):
+        """Background worker for blob synchronization"""
+        while True:
+            try:
+                event = await self.sync_queue.get()
+                
+                # Process sync event
+                if event['type'] in ('created', 'updated'):
+                    await self._sync_blob(event['key'])
+                    
+                self.sync_queue.task_done()
+                
+            except Exception as e:
+                logger.error(f"Error in sync worker: {e}")
+                await asyncio.sleep(1)
+                
+    async def _sync_blob(self, key: str):
+        """Synchronize blob with other nodes"""
+        try:
+            # Get latest blob data
+            blob_data = await self.get_blob(key)
+            if not blob_data:
+                return
+                
+            # Store in Redis cache
+            await self.redis.store_blob(
+                f'blob:{key}',
+                blob_data,
+                ttl=3600
+            )
+            
+            # Notify sync complete
+            await self.mqtt.publish(
+                BLOB_EVENTS['synced'],
+                {
+                    'key': key,
+                    'source': self.mqtt.client_id,
+                    'timestamp': time.time()
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error syncing blob {key}: {e}")
+    
+    async def store_website_content(self, url: str, html_content: str, content_type: str = "text/html") -> str:
+        """Store website content with realtime sync"""
+        try:
+            # Generate blob key
+            key = f"website:{hashlib.sha256(url.encode()).hexdigest()}"
+            
+            # Store content
+            stored_path = await self.store_blob(
+                key,
+                html_content.encode(),
+                compress=True,
+                metadata={
+                    'url': url,
+                    'content_type': content_type,
+                    'timestamp': time.time()
+                }
+            )
+            
+            # Notify creation/update
+            await self.mqtt.publish(
+                BLOB_EVENTS['updated'],
+                {
+                    'key': key,
+                    'source': self.mqtt.client_id,
+                    'url': url,
+                    'timestamp': time.time()
+                }
+            )
+            
+            return stored_path
+            
+        except Exception as e:
+            logger.error(f"Error storing website content: {e}")
+            return ""
 
     async def get_website_content(self, url: str) -> Optional[str]:
-        """
-        Convenience method to retrieve website content
-        
-        Args:
-            url: Website URL
+        """Get website content with caching"""
+        try:
+            # Generate blob key
+            key = f"website:{hashlib.sha256(url.encode()).hexdigest()}"
             
-        Returns:
-            HTML content as string or None if not found
-        """
-        key = f"html:{url}"
-        data = await self.get_blob(key, decompress=True)
-        return data.decode('utf-8') if data else None
+            # Try Redis cache first
+            cached = await self.redis.get_blob(f'blob:{key}')
+            if cached:
+                return cached.decode()
+                
+            # Fall back to blob storage
+            content = await self.get_blob(key)
+            if content:
+                # Cache in Redis
+                await self.redis.store_blob(
+                    f'blob:{key}',
+                    content,
+                    ttl=3600
+                )
+                return content.decode()
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting website content: {e}")
+            return None

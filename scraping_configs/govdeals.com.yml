@@ -1,0 +1,81 @@
+example_scraping_config_version: 1.0
+website: govdeals.com
+version: 1.0.2
+last_updated: '2025-09-24T15:47:05Z'
+status: active
+dna:
+  framework: asp.net
+  page_type: auction_listing
+  structure_hash: a1b2c3d4e5f6
+  accessibility_score: 7.2
+  element_counts:
+    div: 245
+    span: 89
+    a: 156
+  framework_signatures:
+  - jquery
+  - bootstrap
+  performance_hints:
+    has_lazy_loading: false
+    inline_scripts_count: 3
+    external_stylesheets: 4
+scraping_logic:
+  base_url: https://www.govdeals.com
+  login_required: false
+  selectors:
+    auction_container: .auction-item
+    title: .auction-title a
+    price: .current-bid
+    description: .auction-description
+    image: .auction-image img
+    ending_time: .time-remaining
+    location: .auction-location
+    category: .auction-category
+    test_selector: .test-class
+  filters:
+    ending_soon: .ending-soon
+    active: .active-auction
+    featured: .featured
+  pagination:
+    next_page: .pagination .next
+    page_numbers: .pagination a
+    results_per_page: 20
+  data_mapping:
+    title: title
+    price: price
+    description: description
+    image_url: image
+    ending_timestamp: ending_time
+    auction_id: auction_container
+  validation_rules:
+    required_fields:
+    - title
+    - price
+    - ending_time
+    price_format: \$\d+(,\d{3})*(\.\d{2})?
+    date_format: MM/DD/YYYY HH:mm:ss
+  rate_limiting:
+    requests_per_minute: 30
+    delay_between_requests: 2.0
+    respect_robots_txt: true
+  error_handling:
+    retry_count: 3
+    retry_delay: 5
+    timeout_seconds: 30
+    user_agent: Mozilla/5.0 (compatible; ScrapingBot/1.0)
+ai_metadata:
+  last_ai_analysis: '2025-09-24T15:47:05Z'
+  confidence_score: 0.95
+  adaptation_history:
+  - version: 1.0.0
+    change_type: initial
+    timestamp: '2024-01-15T10:30:00Z'
+    reason: Initial configuration
+  - version: 1.0.1
+    change_type: ai_adaptation
+    timestamp: '2025-09-24T15:42:36Z'
+    reason: Added test selector for validation
+  - version: 1.0.2
+    change_type: ai_adaptation
+    timestamp: '2025-09-24T15:47:05Z'
+    reason: Added test selector for validation

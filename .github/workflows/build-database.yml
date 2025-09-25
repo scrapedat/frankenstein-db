@@ -1,0 +1,361 @@
+name: Build FrankensteinDB Package & Database
+
+on:
+  push:
+    branches: [ main, production ]
+    paths:
+      - 'src/**'
+      - 'setup.py'
+      - 'requirements.txt'
+      - '.github/workflows/build-database.yml'
+  pull_request:
+    branches: [ main, production ]
+    paths:
+      - 'src/**'
+      - 'setup.py'
+      - 'requirements.txt'
+      - '.github/workflows/build-database.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to build for'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+        - development
+        - staging
+        - production
+
+env:
+  PYTHON_VERSION: '3.11'
+  REDIS_HOST: localhost
+  REDIS_PORT: 6379
+
+jobs:
+  build-package:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine wheel setuptools
+
+    - name: Build Python package
+      run: |
+        python -m build
+        echo "📦 Package built successfully"
+        ls -la dist/
+
+    - name: Verify package contents
+      run: |
+        python -c "
+        import tarfile
+        import zipfile
+
+        # Check wheel contents
+        with zipfile.ZipFile('dist/frankenstein_db-0.1.0-py3-none-any.whl', 'r') as wheel:
+            contents = wheel.namelist()
+            print('Wheel contents:')
+            for item in sorted(contents):
+                print(f'  {item}')
+
+        # Check source distribution
+        with tarfile.open('dist/frankenstein-db-0.1.0.tar.gz', 'r:gz') as tar:
+            contents = tar.getnames()
+            print('\\nSource distribution contents:')
+            for item in sorted(contents):
+                print(f'  {item}')
+        "
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: frankenstein-db-package
+        path: dist/
+
+  test-database-setup:
+    needs: build-package
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Download built package
+      uses: actions/download-artifact@v3
+      with:
+        name: frankenstein-db-package
+        path: dist/
+
+    - name: Install built package
+      run: |
+        pip install dist/frankenstein_db-0.1.0-py3-none-any.whl
+        echo "✅ Package installed successfully"
+
+    - name: Install and start Redis
+      run: |
+        sudo apt update
+        sudo apt install -y redis-server
+        sudo systemctl start redis-server
+        sudo systemctl enable redis-server
+
+        # Wait for Redis to be ready
+        for i in {1..10}; do
+          if redis-cli ping | grep -q PONG; then
+            echo "Redis is ready"
+            break
+          fi
+          echo "Waiting for Redis... ($i/10)"
+          sleep 2
+        done
+
+    - name: Initialize database structure
+      run: |
+        python -c "
+        import asyncio
+        import time
+        from frankenstein_db import FrankensteinDB
+
+        async def init_database():
+            print('🏗️ Initializing FrankensteinDB structure...')
+
+            db = FrankensteinDB()
+
+            # Test basic connectivity
+            health = await db.get_system_health()
+            print(f'✅ Database health: {health[\"status\"]}')
+
+            # Initialize core data structures
+            print('📊 Setting up database schema...')
+
+            # Create initial test data
+            test_websites = [
+                {
+                    'url': 'https://example.com',
+                    'html': '<html><head><title>Example</title></head><body><h1>Example Domain</h1></body></html>',
+                    'fingerprint': {
+                        'page_type': 'landing',
+                        'framework_signatures': ['vanilla'],
+                        'element_counts': {'h1': 1, 'title': 1},
+                        'accessibility_features': ['semantic_html'],
+                        'performance_hints': {'image_count': 0}
+                    }
+                },
+                {
+                    'url': 'https://httpbin.org',
+                    'html': '<html><head><title>HTTPBin</title></head><body><h1>HTTP Request & Response Service</h1></body></html>',
+                    'fingerprint': {
+                        'page_type': 'api_testing',
+                        'framework_signatures': ['flask'],
+                        'element_counts': {'h1': 1, 'title': 1},
+                        'accessibility_features': ['semantic_html'],
+                        'performance_hints': {'image_count': 0}
+                    }
+                }
+            ]
+
+            for site in test_websites:
+                dna = await db.store_website_snapshot(
+                    site['url'],
+                    site['html'],
+                    site['fingerprint'],
+                    user_context='system_init',
+                    keywords=['test', 'initialization']
+                )
+                print(f'✅ Stored initial data for {site[\"url\"]}: {dna.structure_hash[:8]}...')
+
+            # Initialize AI knowledge base
+            await db.store_user_session('system', {
+                'ai_knowledge': {
+                    'learned_patterns': ['semantic_html', 'framework_detection'],
+                    'confidence_scores': {'html_parsing': 0.95, 'element_counting': 0.98}
+                },
+                'scraping_logic': {
+                    'selectors': ['h1', 'title', '.content', '#main'],
+                    'patterns': ['article', 'post', 'content']
+                },
+                'session_data': {
+                    'init_time': time.time(),
+                    'version': '0.1.0'
+                }
+            })
+            print('✅ AI knowledge base initialized')
+
+            # Verify initialization
+            context = await db.get_user_context('system')
+            search_results = await db.search_websites('test', limit=5)
+
+            print(f'✅ Initialization complete:')
+            print(f'   - User contexts: {bool(context)}')
+            print(f'   - Search index: {len(search_results)} entries')
+
+            await db.close()
+            print('🎉 Database initialization successful!')
+
+        asyncio.run(init_database())
+        "
+
+    - name: Run database integrity checks
+      run: |
+        python -c "
+        import asyncio
+        from frankenstein_db import FrankensteinDB
+
+        async def integrity_check():
+            print('🔍 Running database integrity checks...')
+
+            db = FrankensteinDB()
+
+            # Check all components
+            health = await db.get_system_health()
+
+            checks = {
+                'Redis connectivity': health['components']['redis']['status'] == 'healthy',
+                'Database structure': health['components']['database']['status'] == 'healthy',
+                'Search index': health['components']['search']['status'] == 'healthy',
+                'AI knowledge': health['components']['ai']['status'] == 'healthy'
+            }
+
+            for check_name, passed in checks.items():
+                status = '✅' if passed else '❌'
+                print(f'{status} {check_name}: {\"PASS\" if passed else \"FAIL\"}')
+
+            all_passed = all(checks.values())
+            print(f'\\n{\"🎉 All integrity checks passed!\" if all_passed else \"❌ Some checks failed\"}')
+
+            await db.close()
+            return all_passed
+
+        success = asyncio.run(integrity_check())
+        exit(0 if success else 1)
+        "
+
+    - name: Generate database build report
+      run: |
+        echo '## FrankensteinDB Build Report' > build_report.md
+        echo "- ✅ Python package built successfully" >> build_report.md
+        echo "- ✅ Package installed and tested" >> build_report.md
+        echo "- ✅ Database structure initialized" >> build_report.md
+        echo "- ✅ Initial data loaded" >> build_report.md
+        echo "- ✅ Integrity checks passed" >> build_report.md
+        echo "- ✅ AI knowledge base initialized" >> build_report.md
+        echo '' >> build_report.md
+        echo '### Package Information' >> build_report.md
+        echo '- Name: frankenstein-db' >> build_report.md
+        echo '- Version: 0.1.0' >> build_report.md
+        echo '- Python: ${{ env.PYTHON_VERSION }}' >> build_report.md
+        echo '- Redis: ${{ env.REDIS_HOST }}:${{ env.REDIS_PORT }}' >> build_report.md
+        cat build_report.md
+
+    - name: Upload build report
+      uses: actions/upload-artifact@v3
+      with:
+        name: database-build-report
+        path: build_report.md
+
+  deploy-database:
+    needs: [build-package, test-database-setup]
+    runs-on: ubuntu-latest
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production') && github.event_name != 'pull_request'
+
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+      url: ${{ secrets.DATABASE_DEPLOY_URL }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download built package
+      uses: actions/download-artifact@v3
+      with:
+        name: frankenstein-db-package
+        path: dist/
+
+    - name: Configure deployment
+      run: |
+        echo "🚀 Preparing database deployment..."
+        echo "Environment: ${{ github.event.inputs.environment || 'production' }}"
+        echo "Target: ${{ secrets.DATABASE_HOST }}"
+
+    - name: Deploy to database server
+      run: |
+        # Configure SSH for deployment
+        mkdir -p ~/.ssh
+        echo '${{ secrets.DB_SSH_KEY }}' > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ secrets.DATABASE_HOST }} >> ~/.ssh/known_hosts
+
+        # Deploy package and initialize database
+        echo '📦 Deploying FrankensteinDB package...'
+        scp dist/frankenstein_db-*.whl ${{ secrets.DB_USER }}@${{ secrets.DATABASE_HOST }}:~/frankenstein-db.whl
+
+        ssh ${{ secrets.DB_USER }}@${{ secrets.DATABASE_HOST }} '
+          echo "🔧 Installing package on database server..."
+          pip3 install --upgrade ~/frankenstein-db.whl
+
+          echo "🗄️ Initializing production database..."
+          python3 -c "
+          import asyncio
+          from frankenstein_db import FrankensteinDB
+
+          async def prod_init():
+              db = FrankensteinDB()
+              health = await db.get_system_health()
+              print(f\"Production DB Status: {health[\"status\"]}\")
+              await db.close()
+
+          asyncio.run(prod_init())
+          "
+
+          echo "✅ Production database ready!"
+        '
+
+    - name: Run production health checks
+      run: |
+        ssh ${{ secrets.DB_USER }}@${{ secrets.DATABASE_HOST }} '
+          python3 -c "
+          import asyncio
+          from frankenstein_db import FrankensteinDB
+
+          async def health_check():
+              db = FrankensteinDB()
+              health = await db.get_system_health()
+
+              print(\"Production Database Health Check:\")
+              for component, status in health[\"components\"].items():
+                  print(f\"  {component}: {status[\"status\"]}\")
+
+              await db.close()
+
+          asyncio.run(health_check())
+          "
+        '
+
+    - name: Notify deployment success
+      run: |
+        echo '🎉 FrankensteinDB deployment completed successfully!'
+        echo 'Database is ready for AI scraper operations.'

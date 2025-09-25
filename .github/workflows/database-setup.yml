@@ -1,0 +1,187 @@
+name: Database Setup & Initialization
+
+on:
+  push:
+    branches: [ main, production ]
+  pull_request:
+    branches: [ main, production ]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  setup-database:
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Wait for Redis
+      run: |
+        for i in {1..30}; do
+          if redis-cli -h localhost ping | grep -q PONG; then
+            echo "Redis is ready"
+            break
+          fi
+          echo "Waiting for Redis... ($i/30)"
+          sleep 2
+        done
+
+    - name: Initialize database schema
+      run: |
+        python -c "
+        import asyncio
+        import time
+        from src import FrankensteinDB
+
+        async def setup_database():
+            print('🏗️ Setting up FrankensteinDB...')
+
+            db = FrankensteinDB()
+
+            # Verify Redis connectivity
+            health = await db.get_system_health()
+            print(f'✅ Database health: {health[\"status\"]}')
+
+            # Initialize core data structures
+            print('📊 Initializing database structures...')
+
+            # Create test data for validation
+            test_sites = [
+                ('https://example.com', 'Example Domain'),
+                ('https://httpbin.org', 'HTTP Request & Response Service'),
+                ('https://github.com', 'GitHub'),
+            ]
+
+            for url, title in test_sites:
+                html = f'<html><head><title>{title}</title></head><body><h1>{title}</h1></body></html>'
+                fingerprint = {
+                    'page_type': 'test',
+                    'framework_signatures': ['test'],
+                    'element_counts': {'h1': 1, 'title': 1},
+                    'accessibility_features': ['semantic_html'],
+                    'performance_hints': {'image_count': 0}
+                }
+
+                dna = await db.store_website_snapshot(
+                    url, html, fingerprint,
+                    user_context='db_setup',
+                    keywords=['test', 'setup']
+                )
+                print(f'✅ Stored {url}: {dna.structure_hash[:8]}...')
+
+            # Initialize AI knowledge base
+            await db.store_user_session('system', {
+                'ai_knowledge': {
+                    'learned_patterns': ['html_parsing', 'semantic_analysis'],
+                    'confidence_scores': {'structure_detection': 0.95}
+                },
+                'scraping_logic': {
+                    'selectors': ['h1', 'title', '.content'],
+                    'patterns': ['article', 'main', 'content']
+                },
+                'session_data': {
+                    'setup_time': time.time(),
+                    'version': '0.1.0'
+                }
+            })
+
+            print('✅ AI knowledge base initialized')
+
+            # Run validation tests
+            context = await db.get_user_context('system')
+            results = await db.search_websites('test', limit=5)
+
+            print(f'✅ Validation complete:')
+            print(f'   - System context: {bool(context)}')
+            print(f'   - Search results: {len(results)} entries')
+
+            await db.close()
+            print('🎉 Database setup complete!')
+
+        asyncio.run(setup_database())
+        "
+
+    - name: Run database tests
+      run: |
+        python test_scraping_config.py
+
+    - name: Verify database integrity
+      run: |
+        python -c "
+        import asyncio
+        from src import FrankensteinDB
+
+        async def verify_integrity():
+            print('🔍 Verifying database integrity...')
+
+            db = FrankensteinDB()
+            health = await db.get_system_health()
+
+            components = health.get('components', {})
+            all_healthy = all(
+                comp.get('status') == 'healthy'
+                for comp in components.values()
+                if isinstance(comp, dict)
+            )
+
+            print(f'Database integrity: {\"✅ PASS\" if all_healthy else \"❌ FAIL\"}')
+
+            for name, comp in components.items():
+                if isinstance(comp, dict):
+                    status = comp.get('status', 'unknown')
+                    icon = '✅' if status == 'healthy' else '❌'
+                    print(f'  {icon} {name}: {status}')
+
+            await db.close()
+            return all_healthy
+
+        success = asyncio.run(verify_integrity())
+        exit(0 if success else 1)
+        "
+
+    - name: Generate setup report
+      run: |
+        echo '## Database Setup Report' > setup_report.md
+        echo '- ✅ Redis service started' >> setup_report.md
+        echo '- ✅ Python dependencies installed' >> setup_report.md
+        echo '- ✅ Database schema initialized' >> setup_report.md
+        echo '- ✅ Test data loaded' >> setup_report.md
+        echo '- ✅ AI knowledge base initialized' >> setup_report.md
+        echo '- ✅ Integrity checks passed' >> setup_report.md
+        echo '- ✅ Configuration tests passed' >> setup_report.md
+        echo '' >> setup_report.md
+        echo '### Database Status' >> setup_report.md
+        echo '- Status: Ready for production' >> setup_report.md
+        echo '- Redis: Connected' >> setup_report.md
+        echo '- Components: All healthy' >> setup_report.md
+        cat setup_report.md
+
+    - name: Upload setup artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: database-setup-report
+        path: setup_report.md
