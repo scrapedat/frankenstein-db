@@ -24,10 +24,36 @@ class BlobStorage:
     nested directory structure, and metadata tracking.
     """
     
-    def __init__(self, storage_path: str = "./blob_storage"):
+    def __init__(self, storage_path: str = "./blob_storage",
+                 cache_size_mb: int = 1024,
+                 dna_aware: bool = True):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.metadata_file = self.storage_path / "metadata.json"
+        self.cache_size_mb = cache_size_mb
+        self.dna_aware = dna_aware
+        
+        # Content categorization
+        self.category_patterns = {
+            'html': ['.html', '.htm', 'text/html'],
+            'json': ['.json', 'application/json'],
+            'image': ['image/', '.jpg', '.png', '.gif'],
+            'script': ['.js', '.jsx', '.ts', '.tsx'],
+            'style': ['.css', '.scss', '.sass']
+        }
+        
+        # Cache structures
+        self.content_cache = {}
+        self.cache_stats = {
+            'hits': 0,
+            'misses': 0,
+            'evictions': 0
+        }
+        
+        # DNA patterns for optimization
+        self.dna_patterns = {}
+        self.access_patterns = {}
+        
         self._init_metadata()
         logger.info(f"💾 Blob storage initialized at {self.storage_path}")
 
@@ -43,9 +69,74 @@ class BlobStorage:
                     'last_cleanup': None
                 }, f)
 
+    def _categorize_content(self, key: str, data: bytes) -> str:
+        """
+        Categorize content for optimal compression
+        
+        Args:
+            key: Content identifier
+            data: Raw content data
+            
+        Returns:
+            Content category
+        """
+        # Check file extension and content type
+        for category, patterns in self.category_patterns.items():
+            if any(p in key.lower() for p in patterns):
+                return category
+                
+        # Analyze content heuristically
+        try:
+            sample = data[:1024].decode('utf-8', errors='ignore')
+            
+            if '<html' in sample or '<!DOCTYPE' in sample:
+                return 'html'
+            elif '{' in sample and ':' in sample:
+                return 'json'
+            elif 'function' in sample or 'var' in sample:
+                return 'script'
+            elif '{' in sample and ';' in sample:
+                return 'style'
+        except:
+            pass
+            
+        return 'binary'
+    
+    def _select_compression(self, category: str, size: int) -> Tuple[str, Dict]:
+        """
+        Select optimal compression method
+        
+        Args:
+            category: Content category
+            size: Content size in bytes
+            
+        Returns:
+            Tuple of (compression_method, parameters)
+        """
+        compression_map = {
+            'html': ('zstd', {'level': 3}),
+            'json': ('zstd', {'level': 4}),
+            'script': ('zstd', {'level': 5}),
+            'style': ('zstd', {'level': 4}),
+            'image': ('lz4', {'acceleration': 2}),
+            'binary': ('lz4', {'acceleration': 1})
+        }
+        
+        # Get base configuration
+        method, params = compression_map.get(category, ('zstd', {'level': 1}))
+        
+        # Adjust based on size
+        if size > 1024 * 1024:  # > 1MB
+            if method == 'zstd':
+                params['level'] = min(params['level'] + 1, 9)
+            else:
+                params['acceleration'] = max(params['acceleration'] - 1, 1)
+                
+        return method, params
+    
     async def store_blob(self, key: str, data: bytes, compress: bool = True, metadata: Optional[Dict] = None) -> str:
         """
-        Store blob data with optional compression
+        Store blob data with intelligent compression
         
         Args:
             key: Unique identifier for the blob
@@ -90,9 +181,67 @@ class BlobStorage:
         await asyncio.get_event_loop().run_in_executor(None, _write)
         return str(file_path)
 
+    def _update_access_pattern(self, key: str):
+        """
+        Update content access patterns
+        
+        Args:
+            key: Accessed content key
+        """
+        now = time.time()
+        
+        if key not in self.access_patterns:
+            self.access_patterns[key] = {
+                'count': 0,
+                'last_access': now,
+                'intervals': [],
+                'associated_keys': set()
+            }
+            
+        pattern = self.access_patterns[key]
+        
+        # Update statistics
+        pattern['count'] += 1
+        if pattern['last_access']:
+            interval = now - pattern['last_access']
+            pattern['intervals'].append(interval)
+            pattern['intervals'] = pattern['intervals'][-10:]  # Keep last 10
+            
+        pattern['last_access'] = now
+        
+        # Cleanup old patterns
+        self._cleanup_access_patterns()
+    
+    def _predict_next_access(self, key: str) -> List[str]:
+        """
+        Predict next likely content accesses
+        
+        Args:
+            key: Current content key
+            
+        Returns:
+            List of content keys likely to be accessed next
+        """
+        if key not in self.access_patterns:
+            return []
+            
+        pattern = self.access_patterns[key]
+        predictions = []
+        
+        # Check associated content
+        for associated in pattern['associated_keys']:
+            if associated in self.access_patterns:
+                predictions.append((associated, 
+                                  self.access_patterns[associated]['count']))
+                
+        # Sort by access count
+        predictions.sort(key=lambda x: x[1], reverse=True)
+        
+        return [p[0] for p in predictions[:5]]
+    
     async def get_blob(self, key: str, decompress: bool = True) -> Optional[bytes]:
         """
-        Retrieve blob data
+        Retrieve blob data with predictive caching
         
         Args:
             key: Blob identifier

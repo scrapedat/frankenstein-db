@@ -3,11 +3,17 @@
 
 # Data compression and serialization
 msgpack>=1.0.0
-lzma>=0.0.0  # Built-in Python module
+# lzma is built-in to Python 3.3+
 
 # Database and caching
+redis>=4.0.0  # Optional, graceful degradation if unavailable
+
+# Redis support
 redis>=4.0.0
-# sqlite3 is built-in to Python
+aioredis>=2.0.0
+
+# MQTT support
+paho-mqtt>=1.6.0
 
 # Web scraping and parsing (optional - for examples)
 requests>=2.28.0
@@ -16,14 +22,6 @@ lxml>=4.9.0
 
 # Async support
 aiofiles>=0.8.0
-
-# Core dependencies
-msgpack>=1.0.0
-redis>=4.0.0  # Optional, graceful degradation if unavailable
-
-# Web scraping dependencies (for examples)
-requests>=2.28.0
-beautifulsoup4>=4.11.0
 
 # Development and testing
 pytest>=6.0.0
